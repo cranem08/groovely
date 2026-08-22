@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Workflow Audit — live</title>
+<style>
+  :root {
+    --bg:#0f1216; --panel:#171b22; --line:#262c36; --text:#e6e9ef; --muted:#9aa4b2;
+    --accent:#6ea8fe; --green:#3fb950; --amber:#d29922; --red:#f85149;
+    --pw:#6ea8fe; --df:#d29922; --vf:#a371f7;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  header { padding:18px 22px; border-bottom:1px solid var(--line); display:flex;
+    align-items:baseline; gap:18px; flex-wrap:wrap; }
+  h1 { font-size:17px; margin:0; font-weight:650; letter-spacing:.2px; }
+  .sub { color:var(--muted); font-size:12px; }
+  .live { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--green); display:inline-block; }
+  .dot.off { background:var(--muted); }
+  .cards { display:flex; gap:14px; padding:16px 22px; flex-wrap:wrap; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:12px 16px; min-width:130px; }
+  .card .n { font-size:24px; font-weight:700; }
+  .card .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
+  .wrap { padding:0 22px 40px; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+  tr.stale td { opacity:.55; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:600; }
+  .badge.pw { background:rgba(110,168,254,.15); color:var(--pw); }
+  .badge.df { background:rgba(210,153,34,.15); color:var(--df); }
+  .badge.vf { background:rgba(163,113,247,.15); color:var(--vf); }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; }
+  .run { display:inline-flex; align-items:center; gap:6px; }
+  .bar { position:relative; width:150px; height:16px; background:#0b0e12; border:1px solid var(--line);
+    border-radius:4px; overflow:hidden; }
+  .bar > i { position:absolute; inset:0 auto 0 0; display:block; }
+  .bar b { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    font-size:10px; font-style:normal; color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.7); }
+  .pill { color:var(--muted); font-size:11px; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .empty { color:var(--muted); padding:40px 0; text-align:center; }
+  .agents-list { color:var(--muted); font-size:12px; }
+  .banner { margin:14px 22px 0; padding:10px 14px; border-radius:8px; font-weight:600; }
+  .banner .item { display:block; }
+  .banner.warn { background:rgba(210,153,34,.15); border:1px solid var(--amber); color:var(--amber); }
+  .banner.alert { background:rgba(248,81,73,.15); border:1px solid var(--red); color:var(--red); }
+  .sec { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; margin:18px 22px 10px; font-weight:600; }
+  .usage { display:flex; gap:14px; flex-wrap:wrap; padding:0 22px; }
+  .ubox { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 16px; min-width:270px; }
+  .ubox .name { font-weight:600; margin-bottom:8px; }
+  .ubox .meta { color:var(--muted); font-size:12px; margin-top:8px; }
+  .ubox .bar { width:100%; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Workflow Audit</h1>
+  <span class="live"><span id="livedot" class="dot"></span><span id="livetxt">connecting…</span></span>
+  <span class="sub" id="updated"></span>
+  <span class="sub">offline · localhost · deterministic (no LLM)</span>
+</header>
+
+<div id="banner" class="banner" style="display:none"></div>
+
+<div class="cards">
+  <div class="card"><div class="n" id="c-running">–</div><div class="l">Agents running</div></div>
+  <div class="card"><div class="n" id="c-sessions">–</div><div class="l">Sessions</div></div>
+  <div class="card"><div class="n" id="c-planes">–</div><div class="l">Planes</div></div>
+</div>
+
+<div class="sec">Usage &amp; limits — offline estimate from local logs</div>
+<div class="usage" id="usage"></div>
+
+<div class="wrap">
+  <table>
+    <thead><tr>
+      <th>Plane</th><th>Project</th><th>Session</th><th>Status</th><th>Current agent</th>
+      <th>Model</th><th>Context window</th><th>Tokens (raw)</th><th>Effective</th>
+      <th>Agents</th><th>Skills</th><th>Tools</th><th>Report</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="empty" id="empty" style="display:none">No transcripts found yet. Start a workflow, or check the log-source roots in <span class="mono">audit/config.json</span>.</div>
+</div>
+
+<script>
+const fmt = n => (n==null?"–":n.toLocaleString());
+const short = s => (s||"").slice(0,8);
+const planeClass = p => p==="dark-factory"?"df":(p==="verify"?"vf":"pw");
+function satColor(s){ if(s>=0.9) return "var(--red)"; if(s>=0.7) return "var(--amber)"; return "var(--green)"; }
+
+function bar(tokens, limit, sat){
+  const pct = Math.max(0, Math.min(1, sat));
+  const over = sat > 1.0;
+  const label = fmt(tokens) + " / " + fmt(limit) + "  (" + (sat*100).toFixed(0) + "%)";
+  const fill = over ? "var(--red)" : satColor(sat);
+  const title = over ? "context exceeds configured limit — check model_context_limits in config.json" : "";
+  return `<div class="bar" title="${title}"><i style="width:${(pct*100).toFixed(1)}%;background:${fill}"></i><b>${label}${over?" ⚠":""}</b></div>`;
+}
+
+function agentsCell(obj){
+  const keys = Object.keys(obj||{});
+  if(!keys.length) return '<span class="pill">—</span>';
+  return '<span class="agents-list">'+keys.map(k=>`${k}×${obj[k]}`).join(", ")+'</span>';
+}
+
+async function tick(){
+  let s;
+  try {
+    const r = await fetch("/api/state", {cache:"no-store"});
+    s = await r.json();
+    document.getElementById("livedot").className = "dot";
+    document.getElementById("livetxt").textContent = "live";
+  } catch(e){
+    document.getElementById("livedot").className = "dot off";
+    document.getElementById("livetxt").textContent = "worker offline";
+    return;
+  }
+  document.getElementById("updated").textContent = s.updated_at ? ("updated " + new Date(s.updated_at).toLocaleTimeString()) : "";
+  document.getElementById("c-running").textContent = s.agents_running ?? 0;
+  document.getElementById("c-sessions").textContent = s.sessions_total ?? 0;
+  document.getElementById("c-planes").textContent = (s.planes||[]).length;
+
+  // Notifications banner (usage warnings)
+  const banner = document.getElementById("banner");
+  const notes = s.notifications || [];
+  if(notes.length){
+    const level = notes.some(n => n.level==="alert" || n.level==="over") ? "alert" : "warn";
+    banner.className = "banner " + level;
+    banner.style.display = "block";
+    banner.innerHTML = notes.map(n => `<span class="item">⚠ ${n.message}</span>`).join("");
+  } else { banner.style.display = "none"; banner.innerHTML = ""; }
+
+  // Usage & limits panel
+  const usage = document.getElementById("usage");
+  const budgets = s.usage || [];
+  usage.innerHTML = budgets.length ? budgets.map(b => {
+    const set = b.limit_tokens > 0;
+    const pct = set ? Math.max(0, Math.min(1, b.pct)) : 0;
+    const col = !set ? "var(--muted)"
+      : (b.status==="over"||b.status==="alert") ? "var(--red)"
+      : (b.status==="warn") ? "var(--amber)" : "var(--green)";
+    const label = set ? `${fmt(b.used_tokens)} / ${fmt(b.limit_tokens)} (${(b.pct*100).toFixed(0)}%)`
+                      : `${fmt(b.used_tokens)} used`;
+    let meta = `${b.pace_basis === "cycle-average" ? "pace" : "burn"} ~${fmt(b.burn_per_hour)}/h · ${b.metric} tokens`;
+    if(b.type === "monthly" && b.days_to_reset != null){
+      meta += ` · ${b.days_to_reset} d to reset`;
+      if(set && b.projected_total != null){
+        meta += ` · projected ~${fmt(b.projected_total)} by reset`;
+      }
+    } else if(set && b.hours_to_limit != null){
+      const m = Math.round(b.hours_to_limit*60);
+      meta += " · ~" + (m < 600 ? m + " min" : b.hours_to_limit.toFixed(1) + " h") + " to limit";
+    }
+    if(!set) meta += " · set limit_tokens in config to enable warnings";
+    return `<div class="ubox">
+      <div class="name">${b.name} <span class="pill">${b.window_label||''}</span></div>
+      <div class="bar"><i style="width:${(pct*100).toFixed(1)}%;background:${col}"></i><b>${label}</b></div>
+      <div class="meta">${meta}</div>
+    </div>`;
+  }).join("") : '<span class="pill">No usage budgets configured.</span>';
+
+  const rows = document.getElementById("rows");
+  const empty = document.getElementById("empty");
+  const list = s.sessions || [];
+  empty.style.display = list.length ? "none" : "block";
+  rows.innerHTML = list.map(x => `
+    <tr class="${x.running?'':'stale'}">
+      <td><span class="badge ${planeClass(x.plane)}">${x.plane}</span></td>
+      <td>${x.project||'<span class="pill">—</span>'}${x.git_branch?` <span class="pill">${x.git_branch}</span>`:''}</td>
+      <td class="mono">${short(x.session_id)}</td>
+      <td><span class="run"><span class="dot ${x.running?'':'off'}"></span>${x.running?'running':'idle'}</span></td>
+      <td>${x.current_agent||'main'}</td>
+      <td class="mono">${x.current_model||'–'}</td>
+      <td>${bar(x.context_tokens, x.context_limit, x.saturation)}</td>
+      <td class="mono">${fmt(x.raw_total_tokens)}</td>
+      <td class="mono">${fmt(x.effective_total_tokens)}</td>
+      <td>${agentsCell(x.agents_invoked)}</td>
+      <td>${agentsCell(x.skills_invoked)}</td>
+      <td class="mono">${fmt(x.tool_calls)}</td>
+      <td><a href="/reports/${encodeURIComponent(x.report)}" target="_blank">trace</a></td>
+    </tr>`).join("");
+}
+
+tick();
+setInterval(tick, 3000);
+</script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+{
+  "_comment": "Audit worker configuration. Offline, deterministic, no LLM. Paths may use ~ and env vars. Each log source maps a workflow plane to a directory of Claude native *.jsonl transcripts. The Dark Factory and verify roots are populated by mounting/persisting their in-container logs there (see run-audit.sh and the packaging runner).",
+
+  "log_sources": [
+    { "plane": "product-workflow", "root": "~/.claude/projects" },
+    { "plane": "dark-factory",     "root": "~/.product-workflow-audit/logs/dark-factory" },
+    { "plane": "verify",           "root": "~/.product-workflow-audit/logs/verify" }
+  ],
+
+  "_context_limits_note": "Saturation is only as accurate as these limits. Confirm them against the models you actually run; edit freely. Values below are reasonable defaults; claude-opus-4-8 is set to 1,000,000 because transcripts in this environment showed >390k-token turns.",
+  "model_context_limits": {
+    "default": 200000,
+    "claude-opus-4-8": 1000000,
+    "claude-opus-5": 1000000,
+    "claude-sonnet-5": 1000000,
+    "claude-haiku-4-5-20251001": 200000,
+    "claude-fable-5": 200000
+  },
+
+  "effective_token_weights": {
+    "input": 1.0,
+    "cache_read": 0.1,
+    "cache_creation": 2.0,
+    "output": 5.0
+  },
+
+  "_usage_budgets_note": "Usage is computed from local logs; it is an OFFLINE ESTIMATE, not your real account/plan quota (the native logs do not contain plan limits). A budget is either a rolling window (window_hours) OR an anchored billing cycle (cycle:'monthly', reset_day). The rolling 5-hour + weekly windows mirror how Max plans actually meter; the monthly cycle is a self-imposed budget anchored to your billing renewal day (a billing renewal is NOT a usage reset). Set limit_tokens to enable warnings (0 = unset). metric: 'effective' (cost-weighted) or 'raw'. warn_at/alert_at are fractions of the limit.",
+  "usage_budgets": [
+    { "name": "Max plan — 5-hour window", "window_hours": 5,   "metric": "effective", "limit_tokens": 0, "warn_at": 0.8, "alert_at": 0.95 },
+    { "name": "Max plan — weekly",        "window_hours": 168, "metric": "effective", "limit_tokens": 0, "warn_at": 0.8, "alert_at": 0.95 },
+    { "name": "Billing month (Max 5x, resets 10th)", "cycle": "monthly", "reset_day": 10, "metric": "effective", "limit_tokens": 0, "warn_at": 0.8, "alert_at": 0.95 }
+  ],
+  "usage_burn_lookback_hours": 1.0,
+
+  "state_path": "audit/state/state.json",
+  "reports_dir": "audit/reports",
+  "offsets_path": "audit/state/offsets.json",
+
+  "poll_seconds": 3,
+  "running_threshold_seconds": 90
+}

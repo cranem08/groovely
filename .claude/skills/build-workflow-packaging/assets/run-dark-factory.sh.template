@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# run-dark-factory.sh — per-project Dark Factory runner
+#
+# Emitted by the product-workflow `package` agent from
+# build-workflow-packaging/assets/run-dark-factory.sh.template. The package agent
+# substitutes the {{...}} placeholders at emit time; the authentication logic below is
+# copied VERBATIM and must not be re-derived (it is fiddly and easy to reintroduce bugs).
+#
+# Runs the {{PROJECT_NAME}} Dark Factory image with the project's git repo mounted as the
+# workspace, building the image from this directory if it is missing.
+#
+# Authentication priority (Claude Code inside the container):
+#   1. CLAUDE_CODE_OAUTH_TOKEN env var (Claude Max/Pro plan — no extra billing)
+#   2. macOS Keychain extraction (automatic, transparent)
+#   3. ANTHROPIC_API_KEY env var (fallback — separate Anthropic billing)
+#
+# Max-plan auth (recommended):
+#   claude setup-token                      # one-time; copies token to clipboard
+#   export CLAUDE_CODE_OAUTH_TOKEN=<paste>
+#   ./run-dark-factory.sh [workspace-path]
+#
+# OAuth tokens may expire during long builds; if the run fails with "Not logged in",
+# re-run `claude setup-token` and retry.
+
+set -euo pipefail
+
+# ── Project configuration (package agent substitutes these) ───────────────────
+IMAGE="{{IMAGE_TAG}}"                            # e.g. {project-name}:{tag}
+WORKSPACE="${1:-{{DEFAULT_WORKSPACE}}}"          # git repo the Dark Factory writes to; arg 1 overrides
+REPO_URL="{{REPO_URL}}"                          # project git remote (for the not-found hint); may be empty
+BUILD_CONTEXT="$(cd "$(dirname "$0")" && pwd)"   # this project directory = the handoff build context
+
+# ── Audit log persistence (offline observability) ─────────────────────────────
+# Stream the container's Claude Code transcripts to a host directory so the audit
+# worker can read them. Mounts ONLY the projects/ subdir (not the whole ~/.claude), so
+# the container's own settings are left untouched.
+AUDIT_LOG_DIR="${AUDIT_LOG_DIR:-$HOME/.product-workflow-audit/logs}"
+DF_LOG_DIR="$AUDIT_LOG_DIR/dark-factory/{{PROJECT_NAME}}"
+CONTAINER_CLAUDE_PROJECTS="/root/.claude/projects"   # where Claude Code writes transcripts in the image; adjust if the image runs as a non-root user
+mkdir -p "$DF_LOG_DIR"
+
+# ── Authentication ─────────────────────────────────────────────────────────────
+AUTH_METHOD=""
+OAUTH_TOKEN=""
+API_KEY=""
+
+# 1. Explicit CLAUDE_CODE_OAUTH_TOKEN
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    AUTH_METHOD="oauth_env"
+    OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
+
+# 2. macOS Keychain extraction (transparent — no env var required)
+elif command -v security > /dev/null 2>&1; then
+    KEYCHAIN_JSON=$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)
+    if [ -n "$KEYCHAIN_JSON" ]; then
+        ACCESS_TOKEN=$(echo "$KEYCHAIN_JSON" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('claudeAiOauth', {}).get('accessToken', ''), end='')
+except Exception:
+    pass
+" 2>/dev/null || true)
+        if [ -n "$ACCESS_TOKEN" ]; then
+            AUTH_METHOD="oauth_keychain"
+            OAUTH_TOKEN="$ACCESS_TOKEN"
+        fi
+    fi
+fi
+
+# 3. ANTHROPIC_API_KEY fallback
+if [ -z "$AUTH_METHOD" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    AUTH_METHOD="api_key"
+    API_KEY="$ANTHROPIC_API_KEY"
+fi
+
+# 4. Nothing found — explain and exit
+if [ -z "$AUTH_METHOD" ]; then
+    echo ""
+    echo "ERROR: No authentication credentials found."
+    echo ""
+    echo "Preferred (uses your Claude Max/Pro plan — no extra billing):"
+    echo "  claude setup-token"
+    echo "  export CLAUDE_CODE_OAUTH_TOKEN=<paste token>"
+    echo "  ./run-dark-factory.sh"
+    echo ""
+    echo "Fallback (separate Anthropic API billing):"
+    echo "  export ANTHROPIC_API_KEY=sk-ant-..."
+    echo "  ./run-dark-factory.sh"
+    echo ""
+    exit 1
+fi
+
+# ── Checks ─────────────────────────────────────────────────────────────────────
+if ! docker info > /dev/null 2>&1; then
+    echo "ERROR: Docker is not running. Start Docker and try again."
+    exit 1
+fi
+
+if [ ! -d "$WORKSPACE" ]; then
+    echo "ERROR: Workspace not found at $WORKSPACE"
+    if [ -n "$REPO_URL" ]; then
+        echo "Run: git clone $REPO_URL \"$WORKSPACE\""
+    else
+        echo "Clone your project's git repository to $WORKSPACE first."
+    fi
+    exit 1
+fi
+
+# ── Build image if missing ────────────────────────────────────────────────────
+if ! docker image inspect "$IMAGE" > /dev/null 2>&1; then
+    echo "Image $IMAGE not found. Building from $BUILD_CONTEXT ..."
+    docker build --no-cache -t "$IMAGE" "$BUILD_CONTEXT"
+    docker tag "$IMAGE" "${IMAGE%%:*}:latest"
+    echo "Build complete."
+fi
+
+# ── Auth summary ──────────────────────────────────────────────────────────────
+case "$AUTH_METHOD" in
+    oauth_env)      echo "Auth: Claude plan OAuth token (CLAUDE_CODE_OAUTH_TOKEN)" ;;
+    oauth_keychain) echo "Auth: Claude plan OAuth token (extracted from macOS Keychain)" ;;
+    api_key)        echo "Auth: Anthropic API key (ANTHROPIC_API_KEY)" ;;
+esac
+
+# ── Docker mounts ─────────────────────────────────────────────────────────────
+# Mount the workspace, plus the audit log dir onto the container's Claude projects path.
+# Do NOT mount the host ~/.claude/ — its settings.json registers hooks pointing at host
+# paths that do not exist in the container, which breaks the run. Mounting only the
+# projects/ subdir (an empty host dir -> container transcripts) is safe and is what lets
+# the audit worker observe the Dark Factory.
+MOUNTS=(
+    -v "$WORKSPACE:/workspace"
+    -v "$DF_LOG_DIR:$CONTAINER_CLAUDE_PROJECTS"
+)
+
+# ── Auth env vars for Docker ──────────────────────────────────────────────────
+AUTH_ENVS=()
+if [ "$AUTH_METHOD" = "oauth_env" ] || [ "$AUTH_METHOD" = "oauth_keychain" ]; then
+    AUTH_ENVS=(-e CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN")
+else
+    AUTH_ENVS=(-e ANTHROPIC_API_KEY="$API_KEY")
+fi
+
+# ── Run the Dark Factory ──────────────────────────────────────────────────────
+OUTPUT_LOG=$(mktemp)
+trap 'rm -f "$OUTPUT_LOG"' EXIT
+
+echo "Starting Dark Factory ($IMAGE)..."
+echo "────────────────────────────────────────"
+docker run --rm "${MOUNTS[@]}" "${AUTH_ENVS[@]}" "$IMAGE" 2>&1 | tee "$OUTPUT_LOG" || true
+
+# ── Check for authentication failure ─────────────────────────────────────────
+if grep -q "Not logged in" "$OUTPUT_LOG"; then
+    echo "────────────────────────────────────────"
+    echo "ERROR: Authentication failed inside the container."
+    echo ""
+    case "$AUTH_METHOD" in
+        oauth_keychain|oauth_env)
+            echo "The OAuth token may have expired. Refresh it:"
+            echo "  claude setup-token"
+            echo "  export CLAUDE_CODE_OAUTH_TOKEN=<paste token>"
+            echo "  ./run-dark-factory.sh" ;;
+        api_key)
+            echo "Check that ANTHROPIC_API_KEY is valid:"
+            echo "  export ANTHROPIC_API_KEY=sk-ant-..."
+            echo "  ./run-dark-factory.sh" ;;
+    esac
+    exit 1
+fi
+
+# ── Host-side build summary ───────────────────────────────────────────────────
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo "Host summary  ($WORKSPACE)"
+echo "════════════════════════════════════════════════════════════════"
+echo "── Last 20 commits ──────────────────────────────────────────────"
+git -C "$WORKSPACE" log --oneline -20 2>/dev/null \
+    || echo "(unable to read git log — workspace may not be a git repo)"
+echo ""
+echo "── dev-log tail (last 10 entries) ──────────────────────────────"
+grep "^|" "$WORKSPACE/docs/build/dev-log.md" 2>/dev/null | tail -10 \
+    || echo "(dev-log not found)"
+echo "════════════════════════════════════════════════════════════════"
