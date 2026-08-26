@@ -64,7 +64,8 @@ the project state with the `navigator` agent."
 
 ## Ambiguity Pattern Catalogue
 
-Apply the `spec-sufficiency` skill for the full pattern reference.
+Apply the `spec-sufficiency` skill for the full pattern reference, and the
+`spec-consistency` skill for the cross-artefact consistency gate.
 Core patterns to scan for:
 
 ### Tier 1 — Blocking
@@ -137,6 +138,32 @@ This gate exists because a missing artefact does not surface as a content
 ambiguity — scanning a non-existent file yields nothing. Without Step 0 a
 silently-absent canonical artefact passes through the only mandatory gate
 before `package`.
+
+---
+
+### Step 0.5 — Cross-artefact consistency gate
+
+Run after Step 0 and before the content scan. Like Step 0 this is deterministic —
+it asserts the artefacts still agree with each other, not that any one of them says
+enough.
+
+Apply the `spec-consistency` skill.
+
+1. Run `.claude/skills/spec-consistency/scripts/check_consistency.py --project
+   projects/{name}`.
+2. **Prove the check has teeth before trusting a clean result.** Copy the artefacts,
+   inject one defect of each class (a retired term, a contradicted constant, an
+   orphaned glossary term), confirm each is caught, discard the copy. A check that
+   has never failed is not known to work — the standard `verify` applies to itself.
+3. Every finding is **Tier 1**, on the same footing as a manifest clause finding.
+   An artefact set that contradicts itself cannot be built from, whatever else is
+   true of it.
+4. Findings are worked through the Step 4 triage loop.
+
+This gate exists because remediation measurably introduces inconsistency. Across
+three adversarial scans of one specification, remediation closed 46 findings and
+introduced roughly 8, then 12 — a rate of 17% then 27%, rising. Without a mechanical
+gate the loop does not converge.
 
 ---
 
@@ -227,11 +254,26 @@ For each finding:
    - Proposes a different resolution → apply that instead
    - Cannot resolve it yet → record as pending and move to the next finding
 
-4. **Apply the resolution** — edit the artefact. The PostToolUse write hook
-   will validate `.feature` and ADR files automatically on save.
+4. **Apply the resolution** — edit the artefact using
+   `.claude/skills/spec-consistency/scripts/apply_resolution.py`, which asserts the
+   edit matched exactly once and exits non-zero otherwise. Never apply a resolution
+   with a tool that can silently match nothing. The PostToolUse write hook validates
+   `.feature` files, ADRs and cross-artefact consistency automatically on save, and
+   **blocks** on failure.
+
+   Where the resolution changes a registered constant, edit `docs/specs/constants.md`
+   **first**, then every artefact that restates it. Where it retires a concept, purge
+   the term everywhere **first**, then register it in `docs/specs/retired-terms.md`.
+   The reverse order blocks the edit with its own half-finished change.
 
 5. **Re-check the edited section** — confirm the resolution eliminates the
-   finding without introducing a new one.
+   finding without introducing a new one. Re-run the consistency check after **each**
+   resolution, not once at the end: the measured regressions were introduced one
+   edit at a time and compounded.
+
+   Where the finding named two artefacts, both are in scope for the edit. Correcting
+   one side of a restatement relocates the defect rather than resolving it — this is
+   the single most frequently observed regression.
 
 6. **Mark as resolved** — note it in the running tally.
 
@@ -295,6 +337,12 @@ If invoked on a project where a previous FAIL entry exists in `product-log.md`:
 ## Non-Negotiable Rules
 
 - NEVER issue a PASS verdict if any Tier 1 finding is unresolved.
+- NEVER issue a PASS verdict with an open consistency finding.
+- NEVER record a resolution as applied without verifying the artefact changed.
+  Two false completion entries have been written to a `product-log.md` by a script
+  that reported success without asserting its match. That log is what the navigator
+  and package agents read to determine project state, so a false entry can advance a
+  phase on work that never happened.
 - NEVER edit artefacts without the Product Engineer's explicit approval of
   the specific change.
 - NEVER silently accept a resolution that introduces a new Tier 1 finding.
@@ -332,6 +380,9 @@ the same report under the same Tier discipline; require them clean before PASS.
 
 ## Success Criteria
 
+- [ ] Step 0.5 consistency gate run, its checks shown to have teeth, and every
+      consistency finding resolved
+- [ ] Every resolution applied through a tool that asserts the edit landed
 - [ ] Step 0 canonical-artefact completeness gate run; every prescribed
       artefact present or covered by a recorded Product-Engineer-approved waiver
 - [ ] All artefacts scanned against full pattern catalogue

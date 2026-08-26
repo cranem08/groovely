@@ -68,7 +68,17 @@ def _classify_tool_use(name, inp):
     return "tool", name or "tool", ""
 
 
-def parse_transcript(path, plane, weights):
+def _match_label(value, labels):
+    """Return the configured label whose path equals or is a parent of value, else None."""
+    if not isinstance(value, str):
+        return None
+    for p, l in labels:
+        if value == p or value.startswith(p + os.sep):
+            return l
+    return None
+
+
+def parse_transcript(path, plane, weights, project_labels=()):
     """Parse one *.jsonl transcript into a session summary + ordered trace."""
     session_id = os.path.splitext(os.path.basename(path))[0]
     cwd = None
@@ -78,6 +88,7 @@ def parse_transcript(path, plane, weights):
     by_model = {}        # model -> aggregate
     last_ts = None
     last_sidechain_agent = None
+    matched_label = None  # explicit project label from config (deterministic)
 
     def agg(model):
         return by_model.setdefault(model or "unknown", {
@@ -101,6 +112,8 @@ def parse_transcript(path, plane, weights):
                     last_ts = ts if last_ts is None else max(last_ts, ts)
                 if o.get("cwd"):
                     cwd = o["cwd"]
+                    if matched_label is None:
+                        matched_label = _match_label(cwd, project_labels)
                 if o.get("gitBranch"):
                     git_branch = o["gitBranch"]
                 sidechain = bool(o.get("isSidechain"))
@@ -144,6 +157,14 @@ def parse_transcript(path, plane, weights):
                                            "detail": detail, "sidechain": sidechain})
                             if kind == "agent":
                                 last_sidechain_agent = disp
+                            if matched_label is None and project_labels:
+                                inp = block.get("input")
+                                if isinstance(inp, dict):
+                                    for v in inp.values():
+                                        lab = _match_label(v, project_labels)
+                                        if lab:
+                                            matched_label = lab
+                                            break
     except FileNotFoundError:
         return None
 
@@ -160,8 +181,8 @@ def parse_transcript(path, plane, weights):
     raw_total = sum(a["raw_total"] for a in by_model.values())
     effective_total = round(sum(a["effective_total"] for a in by_model.values()), 1)
 
-    project = None
-    if cwd:
+    project = matched_label
+    if project is None and cwd:
         project = os.path.basename(os.path.normpath(cwd))
 
     return {
@@ -191,10 +212,16 @@ def parse_transcript(path, plane, weights):
 # ── discovery ─────────────────────────────────────────────────────────────────
 
 def find_transcripts(root):
+    """All *.jsonl session transcripts under root. Only files inside a `projects/`
+    directory are treated as transcripts, so stray logs (e.g. Cowork's audit.jsonl) are
+    ignored."""
     out = []
+    root = expand(root)
     if not os.path.isdir(root):
         return out
     for dirpath, _dirs, files in os.walk(root):
+        if "projects" not in os.path.normpath(dirpath).split(os.sep):
+            continue
         for fn in files:
             if fn.endswith(".jsonl"):
                 out.append(os.path.join(dirpath, fn))
@@ -221,6 +248,7 @@ def build_state(sessions, cfg):
             "project": s["project"],
             "git_branch": s["git_branch"],
             "running": is_running,
+            "last_ts": s["last_ts"],
             "last_activity_iso": (datetime.fromtimestamp(s["last_ts"], timezone.utc).isoformat()
                                   if s["last_ts"] else None),
             "current_model": s["current_model"],
@@ -235,7 +263,7 @@ def build_state(sessions, cfg):
             "tool_calls": sum(s["tools"].values()),
             "report": f"{s['session_id']}.md",
         })
-    out_sessions.sort(key=lambda x: (not x["running"], -(x["context_tokens"] or 0)))
+    out_sessions.sort(key=lambda x: (not x["running"], -(x["last_ts"] or 0)))
     return {
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "agents_running": running,
@@ -431,12 +459,15 @@ def compute_usage(sessions, cfg):
 # ── main pass / loop ──────────────────────────────────────────────────────────
 
 def collect_sessions(cfg):
+    labels = [(expand(e["path"]).rstrip("/"), e["label"])
+              for e in cfg.get("project_labels", [])
+              if e.get("path") and e.get("label")]
     sessions = []
     for src in cfg["log_sources"]:
         root = expand(src["root"])
         for path in find_transcripts(root):
-            s = parse_transcript(path, src["plane"], cfg["effective_token_weights"])
-            if s:
+            s = parse_transcript(path, src["plane"], cfg["effective_token_weights"], labels)
+            if s and (s["turn_count"] or s["event_count"]):
                 sessions.append(s)
     return sessions
 

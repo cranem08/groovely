@@ -206,6 +206,11 @@ Runs after every Write tool call. Inspects the file path and validates:
   `## Consequences`, `## Alternatives Considered`). Exits non-zero on
   missing sections.
 
+- **All `.md` and `.feature` files under a project** — cross-artefact consistency:
+  a retired term reappearing, a value disagreeing with `docs/specs/constants.md`, or
+  a glossary term defined and never used. Exits non-zero, so the write is blocked.
+  Blocking is deliberate: an advisory check is one you learn to scroll past.
+
 All other file types pass through silently.
 
 ---
@@ -244,6 +249,7 @@ The `navigator` is the entry point to every session regardless of phase.
 | Skill                      | Role                                                                                                          | Status          |
 |----------------------------|---------------------------------------------------------------------------------------------------------------|-----------------|
 | `spec-sufficiency`         | Ambiguity pattern catalogue, report format, and triage workflow. Applied by `sufficiency-check` agent.        | Required MVP-1  |
+| `spec-consistency`         | Cross-artefact consistency gate: the regression shapes remediation reintroduces, the constants and retired-terms registries, order of operations, and deterministic checkers. Applied by `sufficiency-check` and the write hook. | Required MVP-1  |
 | `build-workflow-packaging` | Docker image assembly: what to vendor, how to tag, how to validate the image is complete.                     | Required MVP-1  |
 | `verify`     | Clause-to-check translation patterns (behavioural + architectural), traceability and teeth (mutation / expected-outcome-inversion) harnesses, accessibility-first element grip, clean-room verification-project scaffold, self-scoping report format, thin per-stack cheat sheets. Applied by `verify` agent. | Required        |
 | `digital-twin-provisioning`| Builds digital twin images for external dependencies, wires them into the test suite.                         | Deferred        |

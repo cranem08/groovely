@@ -2,7 +2,7 @@
   "_comment": "Audit worker configuration. Offline, deterministic, no LLM. Paths may use ~ and env vars. Each log source maps a workflow plane to a directory of Claude native *.jsonl transcripts. The Dark Factory and verify roots are populated by mounting/persisting their in-container logs there (see run-audit.sh and the packaging runner).",
 
   "log_sources": [
-    { "plane": "product-workflow", "root": "~/.claude/projects" },
+    { "plane": "product-workflow", "root": "~/Library/Application Support/Claude/local-agent-mode-sessions" },
     { "plane": "dark-factory",     "root": "~/.product-workflow-audit/logs/dark-factory" },
     { "plane": "verify",           "root": "~/.product-workflow-audit/logs/verify" }
   ],
@@ -32,6 +32,10 @@
   ],
   "usage_burn_lookback_hours": 1.0,
 
+  "project_labels": [
+    { "path": "~/Projects/apps/groovely",       "label": "groovely" },
+    { "path": "~/Projects/product-workflow",    "label": "pw-template" }
+  ],
   "state_path": "audit/state/state.json",
   "reports_dir": "audit/reports",
   "offsets_path": "audit/state/offsets.json",

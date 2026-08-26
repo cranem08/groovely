@@ -25,17 +25,20 @@
     padding:12px 16px; min-width:130px; }
   .card .n { font-size:24px; font-weight:700; }
   .card .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
-  .wrap { padding:0 22px 40px; }
+  .wrap { padding:0 22px 40px; overflow-x:auto; }
   table { width:100%; border-collapse:collapse; }
-  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; white-space:nowrap; }
   th { color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+  th.sortable { cursor:pointer; user-select:none; }
+  th.sortable:hover { color:var(--text); }
+  th.active { color:var(--text); }
+  td.num, th.num { text-align:right; }
   tr.stale td { opacity:.55; }
   .badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:600; }
   .badge.pw { background:rgba(110,168,254,.15); color:var(--pw); }
   .badge.df { background:rgba(210,153,34,.15); color:var(--df); }
   .badge.vf { background:rgba(163,113,247,.15); color:var(--vf); }
   .mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; }
-  .run { display:inline-flex; align-items:center; gap:6px; }
   .bar { position:relative; width:150px; height:16px; background:#0b0e12; border:1px solid var(--line);
     border-radius:4px; overflow:hidden; }
   .bar > i { position:absolute; inset:0 auto 0 0; display:block; }
@@ -46,6 +49,7 @@
   a:hover { text-decoration:underline; }
   .empty { color:var(--muted); padding:40px 0; text-align:center; }
   .agents-list { color:var(--muted); font-size:12px; }
+  .rundot { margin-right:6px; }
   .banner { margin:14px 22px 0; padding:10px 14px; border-radius:8px; font-weight:600; }
   .banner .item { display:block; }
   .banner.warn { background:rgba(210,153,34,.15); border:1px solid var(--amber); color:var(--amber); }
@@ -77,13 +81,10 @@
 <div class="sec">Usage &amp; limits — offline estimate from local logs</div>
 <div class="usage" id="usage"></div>
 
+<div class="sec">Sessions — click a column to sort</div>
 <div class="wrap">
   <table>
-    <thead><tr>
-      <th>Plane</th><th>Project</th><th>Session</th><th>Status</th><th>Current agent</th>
-      <th>Model</th><th>Context window</th><th>Tokens (raw)</th><th>Effective</th>
-      <th>Agents</th><th>Skills</th><th>Tools</th><th>Report</th>
-    </tr></thead>
+    <thead id="thead"></thead>
     <tbody id="rows"></tbody>
   </table>
   <div class="empty" id="empty" style="display:none">No transcripts found yet. Start a workflow, or check the log-source roots in <span class="mono">audit/config.json</span>.</div>
@@ -91,24 +92,87 @@
 
 <script>
 const fmt = n => (n==null?"–":n.toLocaleString());
-const short = s => (s||"").slice(0,8);
 const planeClass = p => p==="dark-factory"?"df":(p==="verify"?"vf":"pw");
 function satColor(s){ if(s>=0.9) return "var(--red)"; if(s>=0.7) return "var(--amber)"; return "var(--green)"; }
+function datePart(iso){ if(!iso) return '<span class="pill">—</span>'; const d=new Date(iso); return isNaN(d)?'—':d.toLocaleDateString(); }
+function timePart(iso){ if(!iso) return '<span class="pill">—</span>'; const d=new Date(iso); return isNaN(d)?'—':d.toLocaleTimeString(); }
+function sumCounts(obj){ return Object.values(obj||{}).reduce((a,b)=>a+b,0); }
 
 function bar(tokens, limit, sat){
-  const pct = Math.max(0, Math.min(1, sat));
-  const over = sat > 1.0;
-  const label = fmt(tokens) + " / " + fmt(limit) + "  (" + (sat*100).toFixed(0) + "%)";
-  const fill = over ? "var(--red)" : satColor(sat);
+  const pct = Math.max(0, Math.min(1, sat||0));
+  const over = (sat||0) > 1.0;
+  const label = fmt(tokens) + " / " + fmt(limit) + "  (" + ((sat||0)*100).toFixed(0) + "%)";
+  const fill = over ? "var(--red)" : satColor(sat||0);
   const title = over ? "context exceeds configured limit — check model_context_limits in config.json" : "";
   return `<div class="bar" title="${title}"><i style="width:${(pct*100).toFixed(1)}%;background:${fill}"></i><b>${label}${over?" ⚠":""}</b></div>`;
 }
-
 function agentsCell(obj){
   const keys = Object.keys(obj||{});
   if(!keys.length) return '<span class="pill">—</span>';
   return '<span class="agents-list">'+keys.map(k=>`${k}×${obj[k]}`).join(", ")+'</span>';
 }
+
+// ── sortable table ────────────────────────────────────────────────────────────
+const COLUMNS = [
+  { key:"project", label:"Project", sort:x=>(x.project||"").toLowerCase(),
+    cell:x=>`${x.running?'<span class="dot rundot" title="running"></span>':''}${x.project||'<span class="pill">—</span>'}` },
+  { key:"plane", label:"Plane", sort:x=>x.plane||"",
+    cell:x=>`<span class="badge ${planeClass(x.plane)}">${x.plane}</span>` },
+  { key:"model", label:"Model", sort:x=>x.current_model||"",
+    cell:x=>`<span class="mono">${x.current_model||"–"}</span>` },
+  { key:"date", label:"Date", sort:x=>x.last_ts||0,
+    cell:x=>`<span class="mono">${datePart(x.last_activity_iso)}</span>` },
+  { key:"time", label:"Time", sort:x=>x.last_ts||0,
+    cell:x=>`<span class="mono" title="${x.last_activity_iso||''}">${timePart(x.last_activity_iso)}</span>` },
+  { key:"context", label:"Context Window", sort:x=>x.context_tokens||0,
+    cell:x=>bar(x.context_tokens, x.context_limit, x.saturation) },
+  { key:"tokens", label:"Tokens Consumed", num:true, sort:x=>x.raw_total_tokens||0,
+    cell:x=>`<span class="mono" title="effective ${fmt(x.effective_total_tokens)}">${fmt(x.raw_total_tokens)}</span>` },
+  { key:"agent", label:"Agent", sort:x=>sumCounts(x.agents_invoked),
+    cell:x=>agentsCell(x.agents_invoked) },
+  { key:"skill", label:"Skill", sort:x=>sumCounts(x.skills_invoked),
+    cell:x=>agentsCell(x.skills_invoked) },
+  { key:"tool", label:"Tool", num:true, sort:x=>x.tool_calls||0,
+    cell:x=>`<span class="mono">${fmt(x.tool_calls)}</span>` },
+];
+const STRING_COLS = new Set(["project","plane","model"]);
+const state = { sessions:[], sortKey:"time", sortDir:"desc" };
+
+function renderTable(){
+  const thead = document.getElementById("thead");
+  const arrow = k => state.sortKey===k ? (state.sortDir==="asc"?" ▲":" ▼") : "";
+  thead.innerHTML = "<tr>" + COLUMNS.map(c =>
+    `<th data-key="${c.key}" class="sortable${c.num?' num':''}${state.sortKey===c.key?' active':''}">${c.label}${arrow(c.key)}</th>`
+  ).join("") + "<th>Trace</th></tr>";
+
+  const col = COLUMNS.find(c=>c.key===state.sortKey) || COLUMNS[4];
+  const dir = state.sortDir==="asc" ? 1 : -1;
+  const rows = [...state.sessions].sort((a,b)=>{
+    const va=col.sort(a), vb=col.sort(b);
+    let r = (va<vb?-1:va>vb?1:0)*dir;
+    if(r===0) r = (b.last_ts||0)-(a.last_ts||0);   // tiebreak: most recent first
+    return r;
+  });
+  document.getElementById("rows").innerHTML = rows.map(x =>
+    `<tr class="${x.running?'':'stale'}">` +
+    COLUMNS.map(c=>`<td class="${c.num?'num mono':''}">${c.cell(x)}</td>`).join("") +
+    `<td><a href="/reports/${encodeURIComponent(x.report)}" target="_blank">trace</a></td>` +
+    "</tr>"
+  ).join("");
+}
+
+document.getElementById("thead").addEventListener("click", e => {
+  const th = e.target.closest("th[data-key]");
+  if(!th) return;
+  const key = th.dataset.key;
+  if(state.sortKey===key){
+    state.sortDir = state.sortDir==="asc" ? "desc" : "asc";
+  } else {
+    state.sortKey = key;
+    state.sortDir = STRING_COLS.has(key) ? "asc" : "desc";  // numbers/dates default newest/largest first
+  }
+  renderTable();
+});
 
 async function tick(){
   let s;
@@ -151,9 +215,7 @@ async function tick(){
     let meta = `${b.pace_basis === "cycle-average" ? "pace" : "burn"} ~${fmt(b.burn_per_hour)}/h · ${b.metric} tokens`;
     if(b.type === "monthly" && b.days_to_reset != null){
       meta += ` · ${b.days_to_reset} d to reset`;
-      if(set && b.projected_total != null){
-        meta += ` · projected ~${fmt(b.projected_total)} by reset`;
-      }
+      if(set && b.projected_total != null) meta += ` · projected ~${fmt(b.projected_total)} by reset`;
     } else if(set && b.hours_to_limit != null){
       const m = Math.round(b.hours_to_limit*60);
       meta += " · ~" + (m < 600 ? m + " min" : b.hours_to_limit.toFixed(1) + " h") + " to limit";
@@ -166,26 +228,10 @@ async function tick(){
     </div>`;
   }).join("") : '<span class="pill">No usage budgets configured.</span>';
 
-  const rows = document.getElementById("rows");
-  const empty = document.getElementById("empty");
-  const list = s.sessions || [];
-  empty.style.display = list.length ? "none" : "block";
-  rows.innerHTML = list.map(x => `
-    <tr class="${x.running?'':'stale'}">
-      <td><span class="badge ${planeClass(x.plane)}">${x.plane}</span></td>
-      <td>${x.project||'<span class="pill">—</span>'}${x.git_branch?` <span class="pill">${x.git_branch}</span>`:''}</td>
-      <td class="mono">${short(x.session_id)}</td>
-      <td><span class="run"><span class="dot ${x.running?'':'off'}"></span>${x.running?'running':'idle'}</span></td>
-      <td>${x.current_agent||'main'}</td>
-      <td class="mono">${x.current_model||'–'}</td>
-      <td>${bar(x.context_tokens, x.context_limit, x.saturation)}</td>
-      <td class="mono">${fmt(x.raw_total_tokens)}</td>
-      <td class="mono">${fmt(x.effective_total_tokens)}</td>
-      <td>${agentsCell(x.agents_invoked)}</td>
-      <td>${agentsCell(x.skills_invoked)}</td>
-      <td class="mono">${fmt(x.tool_calls)}</td>
-      <td><a href="/reports/${encodeURIComponent(x.report)}" target="_blank">trace</a></td>
-    </tr>`).join("");
+  // Sessions table
+  state.sessions = s.sessions || [];
+  document.getElementById("empty").style.display = state.sessions.length ? "none" : "block";
+  renderTable();
 }
 
 tick();

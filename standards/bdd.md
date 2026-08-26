@@ -7,7 +7,12 @@ follow these rules.
 ## Format Rules
 
 - **Exactly one** Given, **one** When, **one** Then per scenario
-- **AND is prohibited** — if you want AND, split into multiple scenarios
+- **AND is prohibited** — if you want AND, split into multiple scenarios.
+  *Clarification: this bans the `And` step keyword. A scenario has exactly three
+  steps. A conjunction **within** a single step is permitted only where the joined
+  items are parameters of one action or facets of one observable outcome — e.g.
+  "submits the registration form with an email address and a password". If the
+  conjunction joins two actions or two outcomes, split the scenario.*
 - Given = pre-existing state (declarative, no actions)
 - When = one user-initiated action at the system boundary
 - Then = one observable outcome visible to the user or external consumer

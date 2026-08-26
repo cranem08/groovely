@@ -178,6 +178,43 @@ PYEOF
     exit 0
 fi
 
+# ── Cross-artefact consistency (blocking) ────────────────────────────────────
+#
+# Runs on every .md and .feature written anywhere under a project. Catches the
+# three shapes that remediation measurably reintroduces:
+#   RETIRED   a concept the project abandoned reappears
+#   CONSTANT  a value disagrees with docs/specs/constants.md
+#   GLOSSARY  a defined term is used nowhere
+#
+# Blocking is deliberate. An advisory check is one you learn to scroll past.
+#
+# ORDER OF OPERATIONS when a change is legitimate:
+#   changing a constant  → edit constants.md FIRST, then its dependants
+#   retiring a term      → purge it everywhere FIRST, then register it
+# The reverse order blocks you with your own half-finished change.
+
+if [[ "$FILE_PATH" == *.md || "$FILE_PATH" == *.feature ]]; then
+    PROJECT_DIR=""
+    d=$(dirname "$FILE_PATH")
+    while [ "$d" != "/" ] && [ -n "$d" ]; do
+        if [ -f "$d/product-log.md" ]; then PROJECT_DIR="$d"; break; fi
+        d=$(dirname "$d")
+    done
+
+    CHECKER=".claude/skills/spec-consistency/scripts/check_consistency.py"
+    if [ -n "$PROJECT_DIR" ] && [ -f "$CHECKER" ]; then
+        if ! OUT=$(python3 "$CHECKER" --project "$PROJECT_DIR" --file "$FILE_PATH" 2>&1); then
+            echo "Consistency check failed: $FILE_PATH" >&2
+            echo "$OUT" >&2
+            echo "" >&2
+            echo "  Constants are owned by docs/specs/constants.md — edit it first, then dependants." >&2
+            echo "  Retired terms are listed in docs/specs/retired-terms.md — purge first, register last." >&2
+            echo "  A legitimate mention can be declared with <!-- consistency:retired-ok -->." >&2
+            exit 1
+        fi
+    fi
+fi
+
 # ── ADR template validation ───────────────────────────────────────────────────
 
 if [[ "$FILE_PATH" == */adrs/ADR-*.md ]]; then
